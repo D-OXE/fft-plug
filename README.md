@@ -322,6 +322,21 @@ cargo test
 
 纯 DSP 单元测试不得要求真实 PipeWire 服务或 Wayland 会话。
 
+### Arch Linux 打包
+
+仓库根目录提供 `PKGBUILD` 与 `make-source-tarball.sh`。二者都不修改系统，也不联网；生成的压缩包与源码 tarball 均被 `.gitignore` 忽略：
+
+```bash
+./make-source-tarball.sh          # 从当前工作区生成 fft-plug-<version>.tar.gz
+makepkg -f                        # 生成 fft-plug-<version>-<rel>-x86_64.pkg.tar.zst
+sudo pacman -U fft-plug-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+包内包含 `/usr/bin/fft-plug`、许可证、README、验收记录以及 `niri-fft-plug.kdl` 配置样例。
+`PKGBUILD` 使用 `options=(!lto)`：Cargo 自行处理 Rust 侧 LTO，而 makepkg 全局 `lto` 选项会把
+`-flto=auto` 追加到 `CFLAGS`/`LDFLAGS`，使 `cc` 编译的 libspa 静态 shim 变成 LTO 字节码，
+最终 rustc 链接（不传递 `LDFLAGS`）无法解析其符号。
+
 ## 已实现与待验证
 
 已由代码和无设备测试覆盖：
