@@ -24,11 +24,11 @@ OpenGL Bars / Curve
 
 截至 2026-09-15，阶段 0–6 的主链路已经落地：Wayland layer-shell、GtkGLArea/OpenGL、纯 DSP、PipeWire 默认输出 monitor、固定容量有序 PCM FIFO、latest snapshot、Bars/Curve 以及 Silence Mode 均已接入，并通过工程质量检查和纯逻辑测试。本轮又完成了建议中的第一批修正：左右 anchor 协商全宽、默认高度 320 logical px、低频 `--debug` 诊断、FIFO overrun/discontinuity 处理、Sleeping 的最终淡出帧，以及动态观感/空闲唤醒优化。
 
-阶段 7–8 的代码路径已具备基础恢复和关闭处理，但真实音频峰值、静音唤醒、默认输出切换、PipeWire 重启、GL context 重建、缩放、多显示器及长时间资源指标仍需在实际桌面会话中验证。因此当前状态是“主链路 MVP 实现完成，最终桌面验收未完成”。建议中提出的 SCTK/EGL/手写 Wayland client 属于后续架构讨论，本阶段按项目约束继续保留 GTK4 + gtk4-layer-shell + GtkGLArea。
+阶段 7–8 的代码路径已具备基础恢复和关闭处理。2026-10-20 已在真实 niri 26.04 + PipeWire 1.6.9 会话完成验收：真实音频峰值、静音睡眠/唤醒、默认输出切换、PipeWire 重启、输出设备移除后恢复、GL/surface 重建、整数与分数缩放、60/120/160 Hz 刷新率、10 分钟 active + 5 分钟静音长跑均通过；多显示器（当前仅单输出）与壁纸轮换未验证。证据与限制见 `docs/validation/MVP_ACCEPTANCE.md`。建议中提出的 SCTK/EGL/手写 Wayland client 属于后续架构讨论，本阶段按项目约束继续保留 GTK4 + gtk4-layer-shell + GtkGLArea。
 
 本轮动态基线为 `soft = 45/220 ms`、`balanced = 25/150 ms`、`punchy = 15/120 ms`，默认使用 `punchy`。renderer 取消长时二次 attack/release，只保留约 8 ms 的 snapshot 视觉插值；活动和淡出期间继续跟随 GTK frame clock，睡眠且淡出完成后移除 tick callback。DSP worker 无 PCM 时使用事件驱动的 `thread::park()`，PCM 发布和 pipeline 关闭通过无锁 `unpark` 唤醒。transient accent、VBO 预分配和 64/96/128 band A/B 仍等待真实测量，不属于本轮改动。
 
-彩虹流光的 V1/V2 已实现：renderer 自行生成 30 s 周期的连续色相动画，Bars 使用独立的材质透明度、低透明度中性遮罩和顶部高光；不读取壁纸、不接入 niri IPC，也不依赖壁纸管理器。仓库现已提供 `niri/fft-plug.kdl` 作为可直接 include/复制的 niri layer-rule 配置入口；用户仍需手工将它加入自己的 niri 配置，程序不会自动修改 `~/.config/niri`。niri compositor 的 `xray blur` 仍是可选的 V3 桌面增强，第一版只使用整个频谱 surface 的毛玻璃背景，不实现逐柱动态 blur region；V0 视觉基线、V3 实际毛玻璃冒烟与 V4 桌面验收尚未完成。
+彩虹流光的 V1/V2 已实现：renderer 自行生成 30 s 周期的连续色相动画，Bars 使用独立的材质透明度、低透明度中性遮罩和顶部高光；不读取壁纸、不接入 niri IPC，也不依赖壁纸管理器。仓库现已提供 `niri/fft-plug.kdl` 作为可直接 include/复制的 niri layer-rule 配置入口；用户仍需手工将它加入自己的 niri 配置，程序不会自动修改 `~/.config/niri`。niri compositor 的 `xray blur` 是可选增强，但实测（2026-10-20）表明**逐柱 blur region 在当前 GTK 4.24 下不可实现**：GTK 自行占用窗口 surface 的 `ext_background_effect_surface_v1`，协议只允许每 surface 一个对象且 GTK 不暴露 region API，原先的客户端实现会让 niri 以协议错误断开连接，因此已移除。当前生效的是透明彩虹柱降级路径；`niri/fft-plug.kdl` 保留但暂不产生可见模糊。
 
 ## 2. MVP 完成条件
 
@@ -459,7 +459,7 @@ MVP 完成前不实现：
 
 ### 8.1 状态与目标
 
-状态：**V1/V2/V3 已实现；V0/V4 的完整对照与性能验收待完成**。
+状态：**V1/V2 已实现并通过真实桌面验收；V3 受 GTK 4.24 限制阻塞（透明柱降级生效）；V0 部分完成（截图与 ACTIVE/SLEEPING 资源数据已记录），V4 的长跑与切换验证已完成，多显示器/壁纸轮换未验证**。
 
 目标是在不读取壁纸路径、像素或主题色的前提下，为 Bars 增加缓慢横向流动的连续彩虹色环，并利用 niri 的 compositor 背景效果形成毛玻璃观感。壁纸定时替换后，fft-plug 无需重新取色或重启。
 
@@ -554,7 +554,9 @@ layer-rule {
 - xray 模糊可以复用壁纸背景，比实时模糊整个桌面内容更符合常驻组件的功耗目标；
 - 普通窗口覆盖频谱仍是既定行为。
 
-程序在每个 Bars 帧把当前可见柱体转换为 surface-local `wl_region`，通过 `ext-background-effect-v1` 交给 niri；协议规定该区域在下一次 `wl_surface.commit` 时生效，区域之外不会产生背景模糊。不要再为 fft-plug 配置 `blur true`，因为 niri 规则自身只知道整层矩形，会把柱间空隙也模糊掉。
+设计意图是程序在每个 Bars 帧把当前可见柱体转换为 surface-local `wl_region`，通过 `ext-background-effect-v1` 交给 niri；协议规定该区域在下一次 `wl_surface.commit` 时生效，区域之外不会产生背景模糊。不要再为 fft-plug 配置 `blur true`，因为 niri 规则自身只知道整层矩形，会把柱间空隙也模糊掉。
+
+**2026-10-20 实测结论：该路径在当前 GTK 4.24 下不可实现，客户端实现已移除。** GTK 在创建窗口 surface 时自行 `get_background_effect(wl_surface)`，`ext-background-effect-v1` 规定每个 `wl_surface` 最多一个 `ext_background_effect_surface_v1`，重复创建会让 niri 发送 `wl_display.error` 并断开连接（实测启动即 `Gdk-Message: Error 71 (协议错误)`）。GTK 也未公开设置 blur region 的 API，且从不调用 `set_blur_region`。因此当前只有透明彩虹柱降级路径；若将来 GTK 暴露 region 控制，可恢复逐柱 region 提交。
 
 降级规则：
 
@@ -570,7 +572,7 @@ layer-rule {
 
 #### 阶段 V0：建立视觉基线
 
-当前记录：niri compositor/CLI 为 `26.04`；本轮 `niri msg layers` 可访问，但因 PipeWire 创建失败，fft-plug 未能建立可截图的 layer surface。因此截图、ACTIVE/SLEEPING 资源数据和无专属 blur rule 的画面对照仍待真实音频桌面会话补齐。
+当前记录（2026-10-20）：niri 26.04 / PipeWire 1.6.9 / DP-2 3840x2160@160 Hz、scale 2。已建立可截图的 layer surface：Bars 与 Curve 截图、ACTIVE（CPU 17–19%）与 SLEEPING（CPU 0.1%、render 冻结）资源数据均已记录；用户配置中已存在 `^fft-plug$` layer-rule，因此“无 rule”对照未执行。
 
 任务：
 
@@ -620,7 +622,9 @@ layer-rule {
 - 不出现颜色跳变、明显接缝、负 alpha 或非有限顶点数据；
 - SLEEPING 后 phase 和持续 redraw 都停止，恢复音频后正常继续。
 
-#### 阶段 V3：niri 毛玻璃与视觉调参
+#### 阶段 V3：niri 毛玻璃与视觉调参（受环境阻塞）
+
+状态：**未完成，且在当前 GTK 4.24 下不可实现**（原因见 8.4）。以下任务保留为将来 GTK 支持 region 控制后的清单。
 
 任务：
 
@@ -661,7 +665,7 @@ cargo test
 
 ### 8.6 完成条件
 
-当前满足 V1/V2 的实现条件，并已提供 V3 所需的 niri 配置入口；毛玻璃 compositor 冒烟、真实桌面视觉对照和长时间性能数据仍未满足本节的全部完成条件。
+当前 V1/V2 已在真实桌面验证；长时间性能数据已获得；V3 因 GTK 4.24 独占 surface background-effect 对象而阻塞，降级路径（透明彩虹柱）生效；多显示器与壁纸轮换未验证。因此本节完成条件中“niri blur 可选增强”一条按“缺失时正常降级”满足，“逐柱毛玻璃呈现”一条不满足。
 
 本轮视觉升级只有在以下条件全部满足时才能标记完成：
 
@@ -682,7 +686,7 @@ cargo test
 | --- | --- | --- |
 | 彩虹动画过快或过饱和 | 视觉疲劳、抢占桌面注意力 | 30 s 周期、限制饱和度和亮度，真实 A/B 后再调整 |
 | HSL/HSV 不同色相感知亮度不一致 | 黄色过亮、蓝色过暗 | 先限制 lightness/value；有明确证据后再改 Oklch/Oklab |
-| niri 规则误用 `blur true` | 形成整层矩形底板 | 仅保留 `xray true`，由 `ext-background-effect-v1` 提交逐柱 region |
+| niri 规则误用 `blur true` | 形成整层矩形底板 | 仅保留 `xray true`；逐柱 region 当前因 GTK 4.24 占用 effect 对象而不可用，保持无 blur 降级 |
 | 亮色或复杂壁纸降低柱体对比度 | 柱体难以辨认 | 中性遮罩、顶部高光和有限的边缘强调 |
 | 彩虹动画阻止睡眠 | 空闲 GPU/CPU 占用回升 | phase 服从 ActivityState；SLEEPING 冻结并移除 tick |
 | 逐帧临时分配增加 | 高频刷新时产生额外开销 | 复用现有 vertex buffer，颜色计算不得创建每帧容器 |

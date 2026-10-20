@@ -4,7 +4,7 @@
 
 `fft-plug` 是一个面向 **niri + Wayland** 桌面的实时音频可视化组件。它从 PipeWire 读取当前系统音频输出，将 PCM 数据转换为频谱快照，并以柱状图或连续曲线显示在桌面底部。
 
-> 当前状态：MVP 主链路已实现。默认构建、Clippy 和纯逻辑测试已通过；仓库保留的历史桌面记录曾确认 niri + Wayland + PipeWire 启动冒烟，但本轮当前环境在 PipeWire 创建阶段返回 `Creation failed`，因此设备切换、真实音频响应、长时间运行和性能验证仍待完成。
+> 当前状态（2026-10-20）：MVP 主链路已在真实 niri 26.04 + PipeWire 1.6.9 会话完成验收——实际音频峰值、静音睡眠与唤醒、默认输出切换、PipeWire 重启、输出设备移除恢复、layer-shell 契约、GL/surface 重建、整数与分数缩放、60/120/160 Hz 刷新率以及 10 分钟 active + 5 分钟静音的长时间运行均已实测。逐柱毛玻璃（V3）在当前 GTK 4.24 下不可实现，程序以透明彩虹柱降级；详细证据与限制见 [docs/validation/MVP_ACCEPTANCE.md](docs/validation/MVP_ACCEPTANCE.md)。
 
 ## 项目定位
 
@@ -51,7 +51,7 @@ cargo run -- --mode bars --dynamics punchy
 
 音频流通过 PipeWire 的默认输出 monitor 自动连接。程序优先请求交错 `F32`，但仍从实际协商结果读取采样率、声道数和格式；当前采集回调支持常见交错与平面整数、浮点格式，并将多声道混合为单声道。音频只在内存中经过固定容量、有序的 PCM FIFO；FIFO 过载时丢弃最旧的 READY block 并标记 discontinuity，DSP 会在下一个 block 前重置分析窗口。DSP 只向 UI 发布最新频谱快照，并在无 PCM 时阻塞等待、由新 block 事件唤醒。
 
-`--debug` 每秒输出一次低频诊断快照，包含 PipeWire callback、PCM 写入/消费/队列/overrun、DSP frame、activity、渲染帧以及 surface 逻辑尺寸。当前尚未提供设备选择参数、多显示器选择参数或配置文件；这些属于后续工作。没有 Wayland layer-shell 会话时，程序会给出可重试的启动错误。
+`--debug` 每秒输出一次低频诊断快照，包含 PipeWire session/reconnect 计数、callback、PCM 写入/消费/队列/overrun、DSP frame、snapshot age、activity、渲染帧、frame age 以及 surface 逻辑尺寸。当前尚未提供设备选择参数、多显示器选择参数或配置文件；这些属于后续工作。没有 Wayland layer-shell 会话时，程序会给出可重试的启动错误。
 
 ## MVP
 
@@ -253,7 +253,7 @@ spawn-at-startup "fft-plug"
 fft-plug
 ```
 
-项目提供可直接复制或通过 niri `include` 引入的配置片段：[niri/fft-plug.kdl](niri/fft-plug.kdl)。要实际启用 compositor 的毛玻璃背景，需要把这个片段加入 niri 配置；它不会修改用户的 `~/.config/niri`，也不包含其他窗口规则或 `opacity` 设置：
+项目提供可直接复制或通过 niri `include` 引入的配置片段：[niri/fft-plug.kdl](niri/fft-plug.kdl)。它不会修改用户的 `~/.config/niri`，也不包含其他窗口规则或 `opacity` 设置：
 
 ```kdl
 layer-rule {
@@ -265,7 +265,9 @@ layer-rule {
 }
 ```
 
-可以复制上面的内容，或在 niri 配置中按实际路径 include `niri/fft-plug.kdl`。`xray true` 让 niri 复用壁纸作为背景；程序通过 `ext-background-effect-v1` 提交每根可见柱子的 surface-local blur region，柱间空隙和柱顶以上不会被加入模糊区域。这里刻意不写 `blur true`：那是 niri 按整层几何启用的矩形模糊，会覆盖整个 `fft-plug` layer。niri 或 compositor 不支持该协议时，程序仍显示透明彩虹柱，不会因缺少 blur capability 启动失败。
+可以复制上面的内容，或在 niri 配置中按实际路径 include `niri/fft-plug.kdl`。这里刻意不写 `blur true`：那是 niri 按整层几何启用的矩形模糊，会覆盖整个 `fft-plug` layer，把柱间空隙也一起模糊。
+
+**当前限制（2026-10-20 实测，见验收文档）**：GTK 4.24 会在创建窗口 surface 时自行创建 `ext_background_effect_surface_v1`，而 `ext-background-effect-v1` 规定每个 `wl_surface` 只能有一个该对象；GTK 也没有公开设置 blur region 的 API，且自身从不提交 region。因此 fft-plug 无法提交逐柱 blur region：旧实现会对同一 surface 重复创建对象，niri 直接以 `wl_display.error`（“wl_surface already has a background effect object attached”）断开连接，所以本轮移除了该实现。上面这段 layer-rule 在当前环境下不会产生可见模糊，程序以**透明彩虹柱**作为正式降级路径运行。等 GTK 提供 region 控制后，该规则即可重新生效。
 
 MVP 默认：
 
@@ -331,24 +333,29 @@ cargo test
 - Bars / Curve 共用同一份 `SpectrumSnapshot`；
 - 有序有界 PCM FIFO、overrun/discontinuity 计数与 analyzer reset、事件唤醒 DSP worker，以及 latest-only snapshot；
 - 左右 anchor 的全宽 layer-shell surface，默认高度为 320 logical px；
-- `--debug` 低频诊断输出，包含 callback、PCM、DSP、activity、render 和实际 surface 尺寸；
+- `--debug` 低频诊断输出，包含 `audio.sessions`、`audio.reconnects`、callback、PCM、DSP frame、`dsp.snapshot_age_ms`、activity、render frame、`render.frame_age_ms` 和实际 surface 尺寸；
 - 静音 `ACTIVE -> DECAYING -> SLEEPING -> ACTIVE` 状态；
 - Bars 的程序化连续彩虹流光（30 s 色相周期、HSL finite/clamp）、半透明材质与顶部高光；Curve 保持原有固定配色和频谱语义；
 - 静音、单频、多频、多声道、极低幅值、不同采样率、窗长归一化、边界输入、attack/release profile 和 worker 唤醒测试；
 - 彩虹 phase 的刷新率分割等价、回绕、非有限输入和 RGB 范围测试；
 - Bars 顶点数量/有限性、材质与生命周期 alpha 分离，以及 ACTIVE/DECAYING/SLEEPING phase 行为测试；
-- `cargo test --all-targets --all-features` 的纯逻辑测试覆盖 DSP、pipeline、renderer 和逐柱 blur geometry。
+- `cargo test --all-targets --all-features` 的纯逻辑测试覆盖 DSP、pipeline（含 snapshot age）、renderer（含 frame age）和彩虹颜色逻辑，共 32 个测试。
 
-已有桌面冒烟记录确认 niri 中存在 `fft-plug` bottom-layer surface，键盘交互为 `none`，PipeWire 建立了指向当前输出节点的 active `F32P` link，并在 `1920×1080`、2 倍缩放输出上得到 `1920×320` 的实际逻辑 surface；本轮无法在当前环境独立复现该记录。
+本轮已完成的真实桌面验收：
 
-仍需在真实桌面会话验证：
+- 440 Hz 测试音 `peak=0.350`、DSP band 峰值 404.1 Hz（band index 3）、snapshot age 2–5 ms；
+- 静音后 `DECAYING -> SLEEPING`，`render.frames` 冻结、CPU 0.1%、RSS 稳定；恢复音频后 1 秒内回到 `ACTIVE`；
+- 默认输出 HECATE ↔ HDMI 切换时采集 stream 透明跟随（`sessions` 仍为 1），PipeWire 服务重启后 `sessions=2 reconnects=1` 并自动重连；全部输出设备移除时保持 `Connected` 且不崩溃；
+- `niri msg layers` 确认 bottom layer、namespace `fft-plug`、无键盘交互；输出 off/on 触发 surface 与 GL 资源重建；
+- 160/120/60 Hz 下 render 帧率分别为 160/120/60；scale 2 与 1.5 下柱体满宽、无接缝；
+- 10 分钟 active 负载 CPU 17–19%、RSS 127.9→128.0 MB、0 overrun/drop；5 分钟静音 CPU 0.1%、RSS +56 kB。
 
-- 实际音频峰值、音量变化、静音休眠和恢复唤醒；
-- 默认输出切换、PipeWire 重启、设备休眠/恢复；
-- OpenGL context 重建、整数/分数缩放、多显示器默认行为；
-- 明亮、暗色、高对比和高饱和壁纸下的彩虹对比度、顶部高光与 niri `xray + ext-background-effect-v1` 效果；
-- 60/120/160 Hz 或可获得的不同刷新环境下的色相周期、SLEEPING 停止 redraw 和唤醒连续性；
-- 长时间运行的帧龄、丢块、CPU 和稳定内存占用。
+仍需验证或评估：
+
+- 逐柱毛玻璃（V3）：受 GTK 4.24 限制阻塞，当前以透明彩虹柱降级；
+- 多显示器默认行为（当前环境只有单输出）；
+- 壁纸轮换与明暗/高对比/高饱和壁纸对照（未修改用户桌面）；
+- 长时间测试按用户批准缩短为 10 + 5 分钟（计划原定 30 + 10）。
 
 ## 后续方向
 

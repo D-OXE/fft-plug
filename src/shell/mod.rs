@@ -18,6 +18,18 @@ const DEFAULT_HEIGHT: i32 = 320;
 const SLEEP_WAKE_POLL: Duration = Duration::from_millis(80);
 const DEBUG_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Formats an optional millisecond measurement as `123` or `none` without allocating.
+struct Milliseconds(Option<u64>);
+
+impl fmt::Display for Milliseconds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{value}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ShellError {
     LayerShellUnavailable,
@@ -242,10 +254,12 @@ fn build_window(
             let ring = pipeline_stats.ring;
             let overruns = ring.overwritten_blocks.saturating_add(ring.rejected_blocks);
             eprintln!(
-                "fft-plug debug: audio.state={:?} rate={} channels={} format={} callbacks={} peak={:.3} drops={} unsupported={} pcm.written={} pcm.consumed={} pcm.queued={} pcm.overruns={} dsp.frames={} dsp.last_peak_hz={:.1} activity={:?} render.frames={} surface={}x{} logical scale={}",
+                "fft-plug debug: audio.state={:?} rate={} channels={} audio.sessions={} audio.reconnects={} format={} callbacks={} peak={:.3} drops={} unsupported={} pcm.written={} pcm.consumed={} pcm.queued={} pcm.overruns={} dsp.frames={} dsp.last_peak_hz={:.1} dsp.snapshot_age_ms={} activity={:?} render.frames={} render.frame_age_ms={} surface={}x{} logical scale={}",
                 audio.state,
                 audio.sample_rate,
                 audio.channels,
+                audio.session_generation,
+                audio.reconnects,
                 audio.format_code,
                 audio.callbacks,
                 audio.peak,
@@ -257,8 +271,10 @@ fn build_window(
                 overruns,
                 pipeline_stats.dsp_frames,
                 pipeline_stats.last_peak_hz,
+                Milliseconds(pipeline_stats.snapshot_age_ms),
                 pipeline_stats.activity,
                 render_stats.frames,
+                Milliseconds(render_stats.frame_age_ms),
                 render_stats.logical_width,
                 render_stats.logical_height,
                 render_stats.scale_factor,

@@ -61,7 +61,7 @@ Bars 或 Curve
 | 桌面应用 | GTK 4 | 应用生命周期、主循环、HiDPI 和 `GtkGLArea` |
 | Wayland shell | `gtk4-layer-shell` | 使用 `wlr-layer-shell` 设置 layer、anchor、namespace 等属性 |
 | 图形 | OpenGL、GLSL、`gl` crate | 实时几何绘制和颜色渐变 |
-| 背景效果 | `wayland-client`、`wayland-protocols` | 使用 `ext-background-effect-v1` 提交逐柱 blur region |
+| 背景效果 | 无（已移除 `wayland-client` / `wayland-protocols` 依赖） | 原计划用 `ext-background-effect-v1` 提交逐柱 blur region；GTK 4.24 自行占用该 surface 对象，客户端无法再提交，详见第 8 节 |
 | CLI | `clap` | 解析显示模式、动态 profile 和 debug 参数 |
 
 默认启用 `desktop` feature。`src/lib.rs` 保留 DSP 与 pipeline，使纯逻辑测试不必依赖 GTK、Wayland、PipeWire 或真实显示会话。
@@ -85,7 +85,7 @@ PipeWire callback        DSP worker             GTK main thread
 2. **延迟有上限。** 音频传输使用固定容量 FIFO，处理跟不上时丢弃旧数据并显式标记断点，不用无界缓存掩盖延迟。
 3. **新鲜度优先于历史完整性。** DSP 到 UI 只保存最新完整频谱快照，UI 不追赶已经过时的频谱帧。
 4. **分析节奏与显示节奏分离。** FFT 按 hop size 更新，renderer 跟随 GTK frame clock；renderer 不重复执行音乐动态平滑。
-5. **平台生命周期明确。** GTK 管理窗口和 surface，OpenGL 资源只在有效 context 中创建和销毁，Wayland 背景效果跟随 surface commit 生效。
+5. **平台生命周期明确。** GTK 管理窗口和 surface，OpenGL 资源只在有效 context 中创建和销毁；surface 重建（输出关闭/开启）时 GL 资源随之重建。
 6. **降级路径正式存在。** layer-shell、OpenGL 或 PipeWire 不可用时给出可操作错误；背景 blur capability 缺失不应破坏频谱柱本身。
 
 ## 5. 模块结构与职责
@@ -236,18 +236,18 @@ Curve 只改变几何构造，不改变频谱快照、峰值含义和 DSP 语义
 
 这样颜色逻辑可以独立测试，也不会把壁纸、主题或环境变量引入 renderer。
 
-### `src/render/background_effect.rs`
+### `src/render/background_effect.rs`（已移除）
 
-负责逐柱毛玻璃：
+该模块曾负责逐柱毛玻璃：从 GTK surface 取原生 `wl_surface`、绑定
+`ext_background_effect_manager_v1`、把每根柱子的 level 转成 surface-local `wl_region`。
 
-- 从 GTK Wayland surface 获取原生 `wl_surface`；
-- 绑定 `ext_background_effect_manager_v1`；
-- 使用当前柱子的 level 生成每根柱子的 surface-local `wl_region`；
-- 将 OpenGL NDC 坐标转换为 Wayland 左上角为原点的逻辑坐标；
-- 柱间 gap 不加入 region；
-- region 为空时提交 `NULL`，清除背景效果；
-- 不主动调用 `wl_surface.commit()`，交由 GTK 的正常 surface 提交流程应用双缓冲状态；
-- 协议或 compositor 不可用时返回 `None`，不影响程序启动。
+2026-10-20 实测发现：GTK 4.24 在创建窗口 surface 时已经自行调用
+`get_background_effect(wl_surface)`（一个 5 行纯 PyGObject 窗口程序同样触发），而
+`ext-background-effect-v1` 规定每个 `wl_surface` 最多一个 `ext_background_effect_surface_v1`。
+模块再次创建该对象会让 niri 发送 `wl_display.error`（"wl_surface already has a background effect
+object attached"），GTK 报 `Error 71 (协议错误)` 并退出——程序在 niri 上无法启动。GTK 也未公开
+设置 blur region 的 API。因此模块与其依赖被移除，透明彩虹柱成为唯一路径；`niri/fft-plug.kdl`
+仍保留，但在当前 GTK 下不产生可见模糊。
 
 niri 配置片段只保留：
 
@@ -274,7 +274,7 @@ CLI
   → GTK application
   → layer-shell surface
   → GtkGLArea realize
-  → OpenGL resources + optional background effect
+  → OpenGL resources
   → frame-clock rendering
 ```
 
@@ -295,7 +295,7 @@ CLI
 - FIFO overflow：丢弃旧 block、记录 overrun、重置 FFT 时域状态；
 - 暂时无音频：进入 decay/sleep，但保留恢复所需的轻量路径；
 - 新音频到达：请求 GTK 唤醒并恢复 Bars/Curve 绘制；
-- 背景效果协议不可用：关闭逐柱 blur，保留透明彩虹柱降级路径；
+- 背景效果：当前客户端不提交 blur region（GTK 4.24 占用 surface 对象），始终使用透明彩虹柱；
 - GL shader 或 context 创建失败：返回带有具体原因的启动错误，不继续使用无效资源。
 
 ## 7. CLI 与用户可见行为
@@ -334,7 +334,8 @@ fft-plug [OPTIONS]
 - Silence Mode 状态转换与 worker 唤醒；
 - 彩虹 phase 的回绕、刷新率分割等价和 finite RGB；
 - Bars 顶点有限性、alpha 分离和不绘制整层遮罩；
-- 逐柱 blur region 的 gap、坐标转换和无效输入处理。
+- 预乘 alpha 与 `ONE/ONE_MINUS_SRC_ALPHA` 混合（见第 8 节视觉缺陷修复）；
+- `--debug` 的 session/reconnect、snapshot age 和 frame age 统计。
 
 ### 工程检查
 
@@ -348,17 +349,15 @@ cargo test --all-features
 cargo build --release --all-features
 ```
 
-上一轮实现逐柱毛玻璃时，上述编译、Clippy 和测试检查均已执行通过，并在 niri/Wayland 会话中确认了 `fft-plug` bottom-layer surface、PipeWire active stream 和 `1920×320` logical surface。
+2026-10-20 再次执行上述检查（`cargo test` 为 22 + 10 = 32 个测试通过），并在真实 niri + PipeWire 会话完成验收：`fft-plug` bottom-layer surface、PipeWire active stream、`1920×320` logical surface、Bars/Curve、睡眠唤醒、输出切换与服务重启、缩放与刷新率、10+5 分钟长跑。证据见 `docs/validation/MVP_ACCEPTANCE.md`。
 
-### 仍需真实环境长期验证
+### 仍需真实环境验证或已阻塞
 
-- 默认输出切换、PipeWire 重启和设备休眠/恢复；
-- OpenGL context 重建；
-- 整数/分数缩放和多显示器行为；
-- 60/120/160 Hz 下的颜色周期与 redraw 节能行为；
-- 长时间运行的 CPU、稳定内存、snapshot age、frame age 和 overrun；
-- 不同 compositor 对 `ext-background-effect-v1` 的支持差异；
-- 明亮、暗色、高对比和高饱和壁纸下的视觉可读性。
+- 多显示器默认行为（当前环境只有单输出）；
+- 壁纸轮换与明暗/高对比/高饱和壁纸下的视觉可读性；
+- 逐柱毛玻璃：受 GTK 4.24 限制阻塞，当前为透明柱降级；
+- 长时间测试按批准缩短为 10 + 5 分钟（计划原定 30 + 10）；
+- 不同 compositor 对 `ext-background-effect-v1` 的处理差异（当前 compositor 已实测会拒绝重复对象）。
 
 ## 9. 重要设计权衡
 

@@ -4,6 +4,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle, Thread};
+use std::time::{Duration, Instant};
 
 use crate::dsp::{Analyzer, DspConfig, DspError, SpectrumSnapshot};
 
@@ -116,6 +117,9 @@ pub struct PipelineStats {
     pub last_peak_hz: f32,
     pub last_peak_level: f32,
     pub activity: ActivityState,
+    /// Age of the most recently published snapshot, measured on publish. `None` before the first
+    /// publish (and after a reset), so a renderer can tell "stale" from "never published".
+    pub snapshot_age_ms: Option<u64>,
 }
 
 struct PipelineMetrics {
@@ -370,8 +374,14 @@ impl PcmRing {
     }
 }
 
+/// 最近一次发布结果。时钟只存在于这个 UI 侧存储层，不写入 `SpectrumSnapshot` 的信号语义。
+struct PublishedSnapshot {
+    snapshot: Arc<SpectrumSnapshot>,
+    published_at: Instant,
+}
+
 pub struct SnapshotStore {
-    latest: Mutex<Option<Arc<SpectrumSnapshot>>>,
+    latest: Mutex<Option<PublishedSnapshot>>,
 }
 
 impl SnapshotStore {
@@ -383,7 +393,10 @@ impl SnapshotStore {
 
     pub fn publish(&self, snapshot: SpectrumSnapshot) {
         if let Ok(mut latest) = self.latest.lock() {
-            *latest = Some(Arc::new(snapshot));
+            *latest = Some(PublishedSnapshot {
+                snapshot: Arc::new(snapshot),
+                published_at: Instant::now(),
+            });
         }
     }
 
@@ -391,7 +404,14 @@ impl SnapshotStore {
         self.latest
             .lock()
             .ok()
-            .and_then(|latest| latest.as_ref().cloned())
+            .and_then(|latest| latest.as_ref().map(|entry| Arc::clone(&entry.snapshot)))
+    }
+
+    pub fn age(&self) -> Option<Duration> {
+        self.latest
+            .lock()
+            .ok()
+            .and_then(|latest| latest.as_ref().map(|entry| entry.published_at.elapsed()))
     }
 }
 
@@ -507,6 +527,10 @@ impl Pipeline {
                 self.metrics.last_peak_level_bits.load(Ordering::Relaxed),
             ),
             activity: self.activity.state(),
+            snapshot_age_ms: self
+                .snapshots
+                .age()
+                .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
         }
     }
 
@@ -773,6 +797,27 @@ mod tests {
             .expect("worker should register");
         assert!(ring.push_with(1, 48_000, |_| 1.0));
         worker.join().expect("worker should be unparked");
+    }
+
+    #[test]
+    fn snapshot_store_reports_none_before_publish_and_age_after_publish() {
+        let store = SnapshotStore::new();
+        assert!(store.age().is_none());
+
+        store.publish(crate::dsp::SpectrumSnapshot {
+            sample_rate: 48_000,
+            frame_index: 7,
+            bands: vec![crate::dsp::FrequencyBand {
+                center_hz: 440.0,
+                level_db: -20.0,
+                normalized_level: 0.5,
+            }],
+        });
+
+        let latest = store.latest().expect("published snapshot");
+        assert_eq!(latest.frame_index, 7);
+        let age = store.age().expect("age after publish");
+        assert!(age <= Duration::from_secs(1));
     }
 
     #[test]

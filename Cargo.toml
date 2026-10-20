@@ -11,14 +11,11 @@ readme = "README.md"
 default = ["desktop"]
 desktop = [
     "dep:gl",
-    "dep:gdk4-wayland",
     "dep:glib-unix",
     "dep:gtk4",
     "dep:gtk4-layer-shell",
     "dep:libc",
     "dep:pipewire",
-    "dep:wayland-client",
-    "dep:wayland-protocols",
 ]
 
 [dependencies]
@@ -27,14 +24,11 @@ realfft = "3.5"
 rustfft = "6.4"
 
 gl = { version = "0.14", optional = true }
-gdk4-wayland = { version = "0.11", features = ["wayland_crate"], optional = true }
 glib-unix = { version = "0.22", optional = true }
 gtk4 = { version = "0.11", optional = true }
 gtk4-layer-shell = { version = "0.8", optional = true }
 libc = { version = "0.2", optional = true }
 pipewire = { version = "0.10", optional = true }
-wayland-client = { version = "0.31", optional = true }
-wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

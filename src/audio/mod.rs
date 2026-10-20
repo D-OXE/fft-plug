@@ -52,6 +52,10 @@ pub struct AudioStats {
     pub callback_drops: u64,
     pub unsupported_buffers: u64,
     pub peak: f32,
+    /// Number of PipeWire sessions this process has started; the first one is generation 1.
+    pub session_generation: u64,
+    /// Session restarts after the first one, i.e. how often capture had to be re-established.
+    pub reconnects: u64,
 }
 
 pub struct AudioStatus {
@@ -64,6 +68,8 @@ pub struct AudioStatus {
     callback_drops: AtomicU64,
     unsupported_buffers: AtomicU64,
     peak_bits: AtomicU32,
+    session_generation: AtomicU64,
+    reconnects: AtomicU64,
 }
 
 impl AudioStatus {
@@ -78,6 +84,20 @@ impl AudioStatus {
             callback_drops: AtomicU64::new(0),
             unsupported_buffers: AtomicU64::new(0),
             peak_bits: AtomicU32::new(0.0_f32.to_bits()),
+            session_generation: AtomicU64::new(0),
+            reconnects: AtomicU64::new(0),
+        }
+    }
+
+    /// Counts a capture session start. Called only by the PipeWire management thread before each
+    /// `run_session`, never from the realtime process callback.
+    fn begin_session(&self) {
+        let generation = self
+            .session_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if generation > 1 {
+            self.reconnects.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -136,6 +156,8 @@ impl AudioStatus {
             callback_drops: self.callback_drops.load(Ordering::Relaxed),
             unsupported_buffers: self.unsupported_buffers.load(Ordering::Relaxed),
             peak: f32::from_bits(self.peak_bits.swap(0, Ordering::AcqRel)),
+            session_generation: self.session_generation.load(Ordering::Acquire),
+            reconnects: self.reconnects.load(Ordering::Relaxed),
         }
     }
 }
@@ -255,6 +277,7 @@ fn run_pipewire_thread(
     let mut ready_sender = Some(ready_sender);
 
     while !stop.load(Ordering::Acquire) {
+        status.begin_session();
         status.set_state(CaptureState::Starting);
         let restart = Arc::new(AtomicBool::new(false));
         let session = run_session(
@@ -641,4 +664,27 @@ fn decode_sample(bytes: &[u8], format: AudioFormat) -> Option<f32> {
     } else {
         0.0
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_status_counts_session_generations_and_reconnects() {
+        let status = AudioStatus::new();
+        let initial = status.snapshot();
+        assert_eq!(initial.session_generation, 0);
+        assert_eq!(initial.reconnects, 0);
+
+        status.begin_session();
+        let first = status.snapshot();
+        assert_eq!(first.session_generation, 1);
+        assert_eq!(first.reconnects, 0);
+
+        status.begin_session();
+        let second = status.snapshot();
+        assert_eq!(second.session_generation, 2);
+        assert_eq!(second.reconnects, 1);
+    }
 }

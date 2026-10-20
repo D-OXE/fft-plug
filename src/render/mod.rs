@@ -10,10 +10,7 @@ use gtk4 as gtk;
 
 use fft_plug::pipeline::{ActivityState, Pipeline};
 
-mod background_effect;
 mod color;
-
-use background_effect::BackgroundEffect;
 
 const FLOATS_PER_VERTEX: usize = 6;
 const FADE_EPSILON: f32 = 0.002;
@@ -23,7 +20,7 @@ const RAINBOW_DECAY_RATE: f32 = 0.35;
 const HIGHLIGHT_HEIGHT: f32 = 0.018;
 const MAX_EXPECTED_BANDS: usize = 128;
 const VERTEX_SHADER: &str = "#version 330 core\nlayout(location = 0) in vec2 a_position;\nlayout(location = 1) in vec4 a_color;\nout vec4 v_color;\nvoid main() {\n    gl_Position = vec4(a_position, 0.0, 1.0);\n    v_color = a_color;\n}\n";
-const FRAGMENT_SHADER: &str = "#version 330 core\nin vec4 v_color;\nout vec4 color;\nvoid main() {\n    color = v_color;\n}\n";
+const FRAGMENT_SHADER: &str = "#version 330 core\nin vec4 v_color;\nout vec4 color;\nvoid main() {\n    // Output premultiplied alpha so GtkGLArea content composites correctly over a transparent\n    // window: straight-alpha output from SRC_ALPHA blending would be squared here.\n    color = vec4(v_color.rgb * v_color.a, v_color.a);\n}\n";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum RenderMode {
@@ -37,6 +34,9 @@ pub struct RenderStats {
     pub logical_width: i32,
     pub logical_height: i32,
     pub scale_factor: i32,
+    /// Age of the most recent frame drawn since the last realize; `None` before the first frame
+    /// and after `unrealize`, so a stalled renderer is distinguishable from a cold one.
+    pub frame_age_ms: Option<u64>,
 }
 
 pub struct GlRenderer {
@@ -59,7 +59,6 @@ pub struct GlRenderer {
     logical_width: i32,
     logical_height: i32,
     scale_factor: i32,
-    background_effect: Option<BackgroundEffect>,
 }
 
 impl GlRenderer {
@@ -84,7 +83,6 @@ impl GlRenderer {
             logical_width: 0,
             logical_height: 0,
             scale_factor: 1,
-            background_effect: None,
         }
     }
 
@@ -128,12 +126,10 @@ impl GlRenderer {
             self.delete_resources();
             return Err("OpenGL vertex array or buffer could not be created".to_string());
         }
-        self.background_effect = BackgroundEffect::new(area);
         Ok(())
     }
 
     pub fn unrealize(&mut self, area: &gtk::GLArea) {
-        self.background_effect = None;
         area.make_current();
         self.delete_resources();
         self.last_frame = None;
@@ -168,32 +164,14 @@ impl GlRenderer {
         let width = self.logical_width.saturating_mul(self.scale_factor);
         let height = self.logical_height.saturating_mul(self.scale_factor);
         if width <= 0 || height <= 0 {
-            if let Some(background_effect) = self.background_effect.as_mut() {
-                background_effect.clear();
-            }
             return activity != ActivityState::Sleeping || !self.fade_is_complete();
         }
 
         self.vertex_data.clear();
         let lifecycle_alpha = self.lifecycle_alpha;
         match mode {
-            RenderMode::Bars => {
-                self.build_bars(lifecycle_alpha);
-                if let Some(background_effect) = self.background_effect.as_mut() {
-                    background_effect.update(
-                        self.logical_width,
-                        self.logical_height,
-                        &self.displayed_levels,
-                        lifecycle_alpha,
-                    );
-                }
-            }
-            RenderMode::Curve => {
-                self.build_curve(lifecycle_alpha);
-                if let Some(background_effect) = self.background_effect.as_mut() {
-                    background_effect.clear();
-                }
-            }
+            RenderMode::Bars => self.build_bars(lifecycle_alpha),
+            RenderMode::Curve => self.build_curve(lifecycle_alpha),
         }
 
         // SAFETY: render is called by GtkGLArea while its context is current. The vertex slice is
@@ -203,7 +181,8 @@ impl GlRenderer {
             gl::ClearColor(0.0, 0.0, 0.0, 0.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            // Premultiplied-alpha blend to match the fragment shader output.
+            gl::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA);
             gl::UseProgram(self.program);
             gl::BindVertexArray(self.vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
@@ -233,6 +212,9 @@ impl GlRenderer {
             logical_width: self.logical_width,
             logical_height: self.logical_height,
             scale_factor: self.scale_factor,
+            frame_age_ms: self
+                .last_frame
+                .map(|last| u64::try_from(last.elapsed().as_millis()).unwrap_or(u64::MAX)),
         }
     }
 
@@ -641,12 +623,22 @@ mod tests {
     }
 
     #[test]
+    fn renderer_stats_reports_none_before_first_frame_and_age_after_frame() {
+        let mut renderer = GlRenderer::new();
+        assert!(renderer.stats().frame_age_ms.is_none());
+
+        renderer.last_frame = Some(Instant::now());
+        let age = renderer.stats().frame_age_ms.expect("age after a frame");
+        assert!(age <= 1_000);
+    }
+
+    #[test]
     fn bars_keep_vertex_data_finite_and_add_only_expected_geometry() {
         let mut renderer = renderer_with_levels(&[0.0, 0.25, 1.0, f32::NAN]);
         renderer.build_bars(0.92);
 
         // One body per band and one highlight for each positive band. The pixels between bars
-        // remain fully transparent so the compositor blur region can distinguish them.
+        // stay fully transparent, so gaps remain clear over the wallpaper.
         let expected_vertices = (4 + 2) * 6;
         assert_eq!(renderer.vertex_count as usize, expected_vertices);
         assert_eq!(
