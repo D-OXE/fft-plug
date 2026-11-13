@@ -1,7 +1,0 @@
-layer-rule {
-    match namespace="^fft-plug$"
-
-    background-effect {
-        xray true
-    }
-}

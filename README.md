@@ -358,9 +358,10 @@ sudo pacman -U fft-plug-0.1.0-1-x86_64.pkg.tar.zst
 
 本轮已完成的真实桌面验收：
 
+<!-- AI Fix - 2026-11-13 13:51 - 泛化本机音频设备信息 -->
 - 440 Hz 测试音 `peak=0.350`、DSP band 峰值 404.1 Hz（band index 3）、snapshot age 2–5 ms；
 - 静音后 `DECAYING -> SLEEPING`，`render.frames` 冻结、CPU 0.1%、RSS 稳定；恢复音频后 1 秒内回到 `ACTIVE`；
-- 默认输出 HECATE ↔ HDMI 切换时采集 stream 透明跟随（`sessions` 仍为 1），PipeWire 服务重启后 `sessions=2 reconnects=1` 并自动重连；全部输出设备移除时保持 `Connected` 且不崩溃；
+- 在两个本地输出设备间切换时采集 stream 透明跟随（`sessions` 仍为 1），PipeWire 服务重启后 `sessions=2 reconnects=1` 并自动重连；全部输出设备移除时保持 `Connected` 且不崩溃；
 - `niri msg layers` 确认 bottom layer、namespace `fft-plug`、无键盘交互；输出 off/on 触发 surface 与 GL 资源重建；
 - 160/120/60 Hz 下 render 帧率分别为 160/120/60；scale 2 与 1.5 下柱体满宽、无接缝；
 - 10 分钟 active 负载 CPU 17–19%、RSS 127.9→128.0 MB、0 overrun/drop；5 分钟静音 CPU 0.1%、RSS +56 kB。

@@ -5,6 +5,7 @@
 
 ## Environment
 
+<!-- AI Fix - 2026-11-13 13:51 - 泛化本机设备、connector 和用户配置路径 -->
 | 项 | 值 | 来源 |
 | --- | --- | --- |
 | rustc | 1.99.1 (58cf8f9c3 2026-10-13, Arch Linux rust 1:1.99.1-1) | `rustc --version` |
@@ -14,9 +15,9 @@
 | niri | 26.04 (8ed0da4) | `niri --version` |
 | PipeWire 服务 | `pipewire-0` 1.6.9 | `wpctl status` |
 | 桌面会话 | `XDG_CURRENT_DESKTOP=niri`，`WAYLAND_DISPLAY=wayland-1` | 环境变量 |
-| 输出 | DP-2 3840x2160@160 Hz，scale 2，逻辑 1920x1080 | `niri msg outputs` |
-| 可用 sink | `HECATE GM400`（默认）、`Navi 48 HDMI (XG27UCS)`、`Ryzen S/PDIF` | `wpctl status` |
-| niri layer-rule | `~/.config/niri/custom-windowrules.kdl` 已有 `^fft-plug$` + `xray true` | 已存在于用户配置 |
+| 输出 | 单个高刷新率 HiDPI 输出（connector、型号和精确分辨率省略） | `niri msg outputs` |
+| 可用 sink | 多个本地输出设备（名称和型号省略） | `wpctl status` |
+| niri layer-rule | 用户 niri 配置中已有 `^fft-plug$` + `xray true` | 已存在于用户配置 |
 | 源码状态 | commit `3137323` + 本轮未提交工作区改动 | `git log` / `git status --short` |
 
 ## Build and Unit Checks
@@ -50,7 +51,7 @@ cargo build --release --all-features
 | 默认 512-frame quantum | callbacks 94/s、DSP snapshot 93/s、render 160/s、PCM ~48 k frames/s |
 | 440 Hz 测试音 | `peak=0.350`（与生成幅度一致），`dsp.last_peak_hz=404.1`，`snapshot_age_ms` 2–5，`render.frame_age_ms` 3 |
 | 静音 | 见下方 Silence |
-| 默认输出切换 | `wpctl set-default 55` → `wpctl status` 显示 fft-plug 采集链接移到 `XG27UCS:monitor_*`；峰值非零；`sessions` 仍为 1（stream 跟随默认节点，无需重连）；切回 44 后回到 `HECATE GM400:monitor_*` |
+| 默认输出切换 | `wpctl set-default <sink-id>` 后 fft-plug 采集链接移到新默认设备的 monitor；峰值非零；`sessions` 仍为 1（stream 跟随默认节点，无需重连）；切回原默认设备后采集正常恢复 |
 | PipeWire 重启 | `systemctl --user restart pipewire` → `audio.sessions=2 audio.reconnects=1`，随后 `Connected`，callbacks/DSP 恢复 |
 | 全部输出设备移除 | 三张声卡 profile 置 `off` → WirePlumber 建立 `虚拟输出` 并设为默认；fft-plug 保持 `Connected` 且存活，callbacks 继续增长，无 panic、无日志刷屏；恢复 profile 后 `peak=0.350` |
 | 唤醒延迟 | 静音 ≥200 s 后播放测试音，下一次 1 s 诊断行即为 `activity=Active`、`render.frame_age_ms=1`；内部唤醒轮询为 80 ms |
@@ -70,13 +71,13 @@ FFT 仍按 hop 执行。这是 “latest-only snapshot” 契约的结果，不�
 | 项 | 证据 |
 | --- | --- |
 | layer / namespace / 键盘 | `niri msg layers`：`Bottom layer` → `Namespace: "fft-plug"`、`Keyboard interactivity: none` |
-| anchor / exclusive zone | 代码固定 left+right+bottom、zone 0；截图中 surface 占满底部 320 logical px（3840x640 物理像素），普通窗口仍可覆盖该层，桌面布局未预留空间 |
+| anchor / exclusive zone | 代码固定 left+right+bottom、zone 0；截图中 surface 占满底部 320 logical px，普通窗口仍可覆盖该层，桌面布局未预留空间 |
 | Bars | 白噪声下 64 根柱子满宽显示，彩虹渐变连续、柱间透明、顶部高光可见（`/tmp/final-bars.png`） |
 | Curve | `--mode curve` 正常绘制 LINE_STRIP，无 NaN、黑屏或 shader 错误（`/tmp/final-curve.png`） |
-| 刷新率 | `niri msg output DP-2 mode` 临时切到 120 Hz / 60 Hz / 160 Hz：`render.frames` 增量分别为 120/60/160 每秒，恢复 160 |
-| 分数缩放 | `niri msg output DP-2 scale 1.5` → `surface=2560x320 logical scale=2`，截图满宽、无接缝、无裁剪；恢复 scale 2 |
-| GL / surface 重建 | `niri msg output DP-2 off` 再 `on`：WAYLAND trace 出现第二组 `wl_compositor.create_surface` + `zwlr_layer_shell_v1.get_layer_surface`，之后 `render.frames` 继续增长、`frame_age_ms` 3–6，说明 GL/context 资源随新 surface 重建 |
-| 多显示器 | `Not run`：当前只有 DP-2 一个输出，无法验证多显示器默认行为 |
+| 刷新率 | 在测试输出上临时切换 120 Hz / 60 Hz / 160 Hz：`render.frames` 增量分别为 120/60/160 每秒，之后恢复原模式 |
+| 分数缩放 | 临时切换 scale 1.5 后截图满宽、无接缝、无裁剪；之后恢复原 scale |
+| GL / surface 重建 | 将测试输出 off 再 on：WAYLAND trace 出现第二组 `wl_compositor.create_surface` + `zwlr_layer_shell_v1.get_layer_surface`，之后 `render.frames` 继续增长、`frame_age_ms` 3–6，说明 GL/context 资源随新 surface 重建 |
+| 多显示器 | `Not run`：当前只有一个输出，无法验证多显示器默认行为 |
 
 ## Visual and Background Effect
 
@@ -93,7 +94,7 @@ FFT 仍按 hop 执行。这是 “latest-only snapshot” 契约的结果，不�
     blur region 的公开 API，且修复后的 trace 中 GTK 从不调用 `set_blur_region`。
 - 因此生效的是计划中的正式降级路径：**透明彩虹柱**（无 blur）。启用 niri rule 后画面也不出现
   整层模糊底板，因为没有任何客户端提交 region。截图 `/tmp/final-bars.png`、`/tmp/crop-scale15.png`。
-- 壁纸轮换：`Not run`（壁纸由 DMS wallpaperCarousel 管理，自动轮换不可安全触发）。
+- 壁纸轮换：`Not run`（壁纸由本地桌面组件管理，自动轮换不可安全触发）。
 - 明暗/高对比/高饱和壁纸对照：`Not run`（不修改用户壁纸）。
 
 ## Performance and Long Run
@@ -155,7 +156,7 @@ FFT 仍按 hop 执行。这是 “latest-only snapshot” 契约的结果，不�
 
 - **逐柱毛玻璃（V3）受环境阻塞**：GTK 4.24 独占 surface 的 background-effect 对象且不暴露 region API。
   `niri/fft-plug.kdl` 仍然保留，但在当前 GTK 下不产生可见模糊；这是降级路径，不是崩溃。
-- **多显示器**：当前环境只有 DP-2，未验证多输出默认行为与 connector 无关性。
+- **多显示器**：当前环境只有一个输出，未验证多输出默认行为与 connector 无关性。
 - **壁纸轮换 / 明暗壁纸对照**：未执行，避免修改用户桌面状态。
 - **长时间测试时长**：按用户批准缩短为 10 min active + 5 min silent（计划要求 30 + 10）。
 - **频段分布**：band 边界为 `position^1.35`，低频占用少量 band（440 Hz 在 band 3）。这是既有 DSP

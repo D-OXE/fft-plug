@@ -572,7 +572,8 @@ layer-rule {
 
 #### 阶段 V0：建立视觉基线
 
-当前记录（2026-10-20）：niri 26.04 / PipeWire 1.6.9 / DP-2 3840x2160@160 Hz、scale 2。已建立可截图的 layer surface：Bars 与 Curve 截图、ACTIVE（CPU 17–19%）与 SLEEPING（CPU 0.1%、render 冻结）资源数据均已记录；用户配置中已存在 `^fft-plug$` layer-rule，因此“无 rule”对照未执行。
+<!-- AI Fix - 2026-11-13 13:51 - 泛化本机显示器和用户配置细节 -->
+当前记录（2026-10-20）：在 niri 26.04 / PipeWire 1.6.9 的单个高刷新率 HiDPI 输出上完成验证，具体 connector、型号和分辨率不随源码发布。已建立可截图的 layer surface：Bars 与 Curve 截图、ACTIVE（CPU 17–19%）与 SLEEPING（CPU 0.1%、render 冻结）资源数据均已记录；测试环境中已存在 `^fft-plug$` layer-rule，因此“无 rule”对照未执行。
 
 任务：
 

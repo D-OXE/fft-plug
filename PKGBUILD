@@ -1,4 +1,5 @@
-# Maintainer: once <once@localhost>
+# AI Fix - 2026-11-13 13:51 - 移除源码仓库中的个人维护者标识
+# Maintainer: fft-plug contributors
 # Local package: builds from a source tarball generated out of the working tree.
 #   ./make-source-tarball.sh && makepkg -f
 # The tarball is not committed (see .gitignore), so its hash is intentionally SKIP.
@@ -19,8 +20,9 @@ sha256sums=('SKIP')
 
 build() {
   cd "$pkgname-$pkgver"
-  # Keep the build directory out of panic messages / debug strings (makepkg reproducibility check).
-  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/usr/src/debug/$pkgname"
+  # AI Fix - 2026-11-13 13:51 - 避免二进制调试字符串泄露源码和 Cargo 主目录
+  local cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+  export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$srcdir=/usr/src/debug/$pkgname --remap-path-prefix=$cargo_home=/usr/src/cargo"
   cargo build --release --locked --all-features
 }
 
@@ -35,6 +37,5 @@ package() {
   install -Dm755 target/release/fft-plug "$pkgdir/usr/bin/fft-plug"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
-  install -Dm644 docs/validation/MVP_ACCEPTANCE.md "$pkgdir/usr/share/doc/$pkgname/MVP_ACCEPTANCE.md"
   install -Dm644 niri/fft-plug.kdl "$pkgdir/usr/share/doc/$pkgname/niri-fft-plug.kdl"
 }

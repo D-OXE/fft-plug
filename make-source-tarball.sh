@@ -8,14 +8,13 @@ top="fft-plug-$version"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/$top"
-rsync -a \
-  --exclude '.git/' \
-  --exclude '.superpowers/' \
-  --exclude 'target/' \
-  --exclude 'PKGBUILD' \
-  --exclude 'make-source-tarball.sh' \
-  --exclude '*.tar.gz' \
-  --exclude '*.pkg.tar.zst' \
-  ./ "$tmp/$top/"
+# AI Fix - 2026-11-13 13:51 - 仅打包 Git 跟踪或未忽略的源码，防止带入本地隐私文件
+git ls-files --cached --others --exclude-standard -z -- \
+  . \
+  ':(exclude)PKGBUILD' \
+  ':(exclude)make-source-tarball.sh' \
+  ':(exclude)pkg/**' \
+  ':(exclude)src/fft-plug-*/**' | \
+  rsync -a --from0 --files-from=- --ignore-missing-args ./ "$tmp/$top/"
 bsdtar -czf "fft-plug-$version.tar.gz" -C "$tmp" "$top"
 echo "wrote fft-plug-$version.tar.gz"

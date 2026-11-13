@@ -1,11 +1,21 @@
+# AI Fix - 2026-11-13 13:51 - 收紧源码仓库边界，忽略构建、打包、凭据和本地工具产物
 # Rust 构建产物
 /target/
 **/*.rs.bk
 *.pdb
+*.profraw
+/coverage/
+/lcov.info
 
-# 打包 / 发布产物（本仓库源码即交付物）
-*.tar.zst
-*.tar.gz
+# makepkg / 打包产物（保留 PKGBUILD 与打包脚本）
+/pkg/
+/src/fft-plug-*/
+/src/fft-plug-*.tar.*
+/*.pkg.tar.*
+/*.src.tar.*
+/*.tar.zst
+/*.tar.gz
+/*.sig
 /dist/
 
 # 编辑器与 IDE
@@ -21,11 +31,21 @@ Thumbs.db
 
 # 本地环境与个人配置（不随仓库分发）
 .env
-.env.local
+.env.*
+!.env.example
+.direnv/
+.cache/
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
 
 # 运行时日志与临时输出
 *.log
 /fft-plug.log
+core
+core.*
 
 # 说明：
 # - Cargo.toml / Cargo.lock 必须提交：这是可执行程序，不是被依赖的库，
