@@ -14,7 +14,9 @@ mod color;
 
 const FLOATS_PER_VERTEX: usize = 6;
 const FADE_EPSILON: f32 = 0.002;
-const VISUAL_INTERPOLATION_SECONDS: f32 = 0.008;
+const MIN_VISUAL_INTERPOLATION_SECONDS: f32 = 0.008;
+const MAX_VISUAL_INTERPOLATION_SECONDS: f32 = 0.05;
+const INTERPOLATION_INTERVAL_FRACTION: f32 = 0.9;
 const SLEEP_FADE_SECONDS: f32 = 0.12;
 const RAINBOW_DECAY_RATE: f32 = 0.35;
 const HIGHLIGHT_HEIGHT: f32 = 0.018;
@@ -49,6 +51,9 @@ pub struct GlRenderer {
     previous_levels: Vec<f32>,
     current_levels: Vec<f32>,
     snapshot_age: f32,
+    // AI Fix - 2026-11-16 10:43 - 按 Renderer 实际观察到的 snapshot 节奏平滑柱高
+    interpolation_seconds: f32,
+    last_snapshot_at: Option<Instant>,
     last_frame: Option<Instant>,
     last_snapshot: u64,
     last_activity: ActivityState,
@@ -73,6 +78,8 @@ impl GlRenderer {
             previous_levels: Vec::with_capacity(64),
             current_levels: Vec::with_capacity(64),
             snapshot_age: 0.0,
+            interpolation_seconds: MIN_VISUAL_INTERPOLATION_SECONDS,
+            last_snapshot_at: None,
             last_frame: None,
             last_snapshot: 0,
             last_activity: ActivityState::Sleeping,
@@ -135,6 +142,8 @@ impl GlRenderer {
         self.last_frame = None;
         self.lifecycle_alpha = 0.0;
         self.snapshot_age = 0.0;
+        self.interpolation_seconds = MIN_VISUAL_INTERPOLATION_SECONDS;
+        self.last_snapshot_at = None;
         self.last_activity = ActivityState::Sleeping;
         self.logical_width = 0;
         self.logical_height = 0;
@@ -155,7 +164,7 @@ impl GlRenderer {
             .unwrap_or(Duration::from_millis(16))
             .min(Duration::from_millis(100));
         let activity = pipeline.activity_state();
-        self.update_target(pipeline);
+        self.update_target(pipeline, now);
         self.advance_levels(elapsed.as_secs_f32(), activity);
 
         self.logical_width = area.width();
@@ -218,7 +227,7 @@ impl GlRenderer {
         }
     }
 
-    fn update_target(&mut self, pipeline: &Pipeline) {
+    fn update_target(&mut self, pipeline: &Pipeline, now: Instant) {
         let Some(snapshot) = pipeline.latest_snapshot() else {
             return;
         };
@@ -226,6 +235,7 @@ impl GlRenderer {
             return;
         }
         self.last_snapshot = snapshot.frame_index;
+        self.note_snapshot_arrival(now);
         self.displayed_levels.resize(snapshot.bands.len(), 0.0);
         self.previous_levels.resize(snapshot.bands.len(), 0.0);
         self.previous_levels.copy_from_slice(&self.displayed_levels);
@@ -237,6 +247,13 @@ impl GlRenderer {
                 .map(|band| finite_level(band.normalized_level)),
         );
         self.snapshot_age = 0.0;
+    }
+
+    fn note_snapshot_arrival(&mut self, now: Instant) {
+        if let Some(previous) = self.last_snapshot_at.replace(now) {
+            let interval = now.saturating_duration_since(previous).as_secs_f32();
+            self.interpolation_seconds = adaptive_interpolation_seconds(interval);
+        }
     }
 
     fn advance_levels(&mut self, elapsed_seconds: f32, activity: ActivityState) {
@@ -263,8 +280,8 @@ impl GlRenderer {
             }
         } else {
             self.snapshot_age =
-                (self.snapshot_age + elapsed_seconds).min(VISUAL_INTERPOLATION_SECONDS);
-            let interpolation = (self.snapshot_age / VISUAL_INTERPOLATION_SECONDS).clamp(0.0, 1.0);
+                (self.snapshot_age + elapsed_seconds).min(self.interpolation_seconds);
+            let interpolation = (self.snapshot_age / self.interpolation_seconds).clamp(0.0, 1.0);
             for (index, displayed) in self.displayed_levels.iter_mut().enumerate() {
                 let previous = self.previous_levels.get(index).copied().unwrap_or(0.0);
                 let current = self.current_levels.get(index).copied().unwrap_or(0.0);
@@ -278,7 +295,7 @@ impl GlRenderer {
             0.0
         };
         let alpha_time = if target_alpha > self.lifecycle_alpha {
-            VISUAL_INTERPOLATION_SECONDS
+            MIN_VISUAL_INTERPOLATION_SECONDS
         } else {
             SLEEP_FADE_SECONDS
         };
@@ -603,6 +620,17 @@ fn response_alpha(elapsed_seconds: f32, time_constant: f32) -> f32 {
     (1.0 - (-elapsed_seconds.max(0.0) / time_constant).exp()).clamp(0.0, 1.0)
 }
 
+// AI Fix - 2026-11-16 10:43 - 根据真实 snapshot 间隔预留少量到达抖动余量
+fn adaptive_interpolation_seconds(snapshot_interval_seconds: f32) -> f32 {
+    if !snapshot_interval_seconds.is_finite() || snapshot_interval_seconds <= 0.0 {
+        return MIN_VISUAL_INTERPOLATION_SECONDS;
+    }
+    (snapshot_interval_seconds * INTERPOLATION_INTERVAL_FRACTION).clamp(
+        MIN_VISUAL_INTERPOLATION_SECONDS,
+        MAX_VISUAL_INTERPOLATION_SECONDS,
+    )
+}
+
 fn finite_coordinate(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(-1.0, 1.0)
@@ -697,5 +725,36 @@ mod tests {
 
         assert!(active_delta > decaying_delta);
         assert!(decaying_delta > 0.0);
+    }
+
+    // AI Fix - 2026-11-16 10:43 - 覆盖频谱快照节奏驱动的自适应插值时长
+    #[test]
+    fn interpolation_duration_tracks_snapshot_cadence() {
+        let low_cadence = adaptive_interpolation_seconds(1.0 / 24.0);
+        let high_cadence = adaptive_interpolation_seconds(1.0 / 94.0);
+
+        assert!((low_cadence - 0.0375).abs() < 0.000_001);
+        assert!((high_cadence - 0.009_574_468).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn interpolation_duration_bounds_invalid_and_stalled_cadence() {
+        assert_eq!(adaptive_interpolation_seconds(0.0), 0.008);
+        assert_eq!(adaptive_interpolation_seconds(f32::NAN), 0.008);
+        assert_eq!(adaptive_interpolation_seconds(1.0), 0.05);
+    }
+
+    #[test]
+    fn renderer_spreads_motion_across_measured_snapshot_interval() {
+        let mut renderer = renderer_with_levels(&[0.0]);
+        renderer.previous_levels.push(0.0);
+        renderer.current_levels.push(1.0);
+        let first = Instant::now();
+        renderer.note_snapshot_arrival(first);
+        renderer.note_snapshot_arrival(first + Duration::from_millis(42));
+
+        renderer.advance_levels(0.008, ActivityState::Active);
+
+        assert!((0.20..0.23).contains(&renderer.displayed_levels[0]));
     }
 }

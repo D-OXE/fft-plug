@@ -207,7 +207,8 @@ sleep after           0.55 s
 - 在 GLArea realize 时创建 shader program、VAO 和 VBO；
 - 在 unrealize 时删除 context 相关资源；
 - 只消费 `Pipeline::latest_snapshot()`；
-- 在相邻 DSP snapshot 之间做约 8 ms 的视觉插值；
+<!-- AI Fix - 2026-11-16 10:43 - 同步 Renderer 自适应插值行为 -->
+- 在相邻 DSP snapshot 之间按实际到达间隔的 90% 做 8–50 ms 自适应视觉插值；
 - 不在 renderer 中重复执行长时间 attack/release；
 - 所有顶点坐标、颜色和 alpha 都进行有限值与范围约束；
 - Bars 与 Curve 使用相同的频谱数据语义；

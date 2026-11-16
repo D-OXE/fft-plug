@@ -62,7 +62,8 @@ cargo run -- --mode bars --dynamics punchy
 - 多声道混合为单声道，使用 Hann 窗和实数 FFT 生成频谱；
 - 将 FFT bin 聚合为视觉频段，并使用 dB 标尺和可选的 `soft` / `balanced` / `punchy` attack/release 平滑；默认是 `punchy`（15 ms / 120 ms）；
 - 提供 `bars` 与 `curve` 两种显示模式；
-- renderer 不再重复执行 45/220 ms 音乐动态，只用约 8 ms 的对称插值连接 DSP snapshot；
+<!-- AI Fix - 2026-11-16 10:43 - 记录 Renderer 自适应 snapshot 插值 -->
+- renderer 不再重复执行 45/220 ms 音乐动态，而是按实际 snapshot 到达间隔进行 8–50 ms 的自适应插值；
 - 使用 `wlr-layer-shell`，默认位于 `bottom` 层，不抢键盘焦点、不申请独占区域；
 - 窗口可被普通应用覆盖，因此不会永久浪费桌面空间；
 - 静音后平滑衰减并进入低活动状态，完成淡出后移除 GTK frame tick，恢复音频时自动唤醒并重新安装；
@@ -171,7 +172,7 @@ DSP 频率不等于 GPU 刷新率。
 
 - FFT 更新由 `hop size` 决定；
 - GTK/OpenGL 绘制应跟随 GTK frame clock / 显示器刷新节奏；
-- renderer 在两个 DSP snapshot 之间只做约 8 ms 的对称视觉插值，不重复施加长时 attack/release；
+- renderer 在两个 DSP snapshot 之间按实际到达间隔的 90% 做 8–50 ms 自适应视觉插值，不重复施加长时 attack/release；
 - 不使用固定 60/120 FPS timer 作为架构前提；
 - 活动或淡出期间保留 GTK frame clock，睡眠且淡出完成后移除 tick callback；
 - 可设置最大绘制上限用于节能，但必须与实际显示刷新率解耦。
@@ -344,7 +345,7 @@ sudo pacman -U fft-plug-0.1.0-1-x86_64.pkg.tar.zst
 - `fft-plug` layer-shell namespace、bottom 层、无键盘焦点、exclusive zone 0；
 - PipeWire 默认输出 monitor 的运行时格式读取和自动恢复循环；
 - 4096 点 FFT、512 点 hop、Hann 窗、64 个有效频段、dB floor 和时间驱动的 dynamics profile 平滑；
-- `soft` / `balanced` / `punchy` profile、8 ms renderer 视觉插值，以及活动期间 frame clock / 睡眠期间无 tick 的切换；
+- `soft` / `balanced` / `punchy` profile、8–50 ms renderer 自适应视觉插值，以及活动期间 frame clock / 睡眠期间无 tick 的切换；
 - Bars / Curve 共用同一份 `SpectrumSnapshot`；
 - 有序有界 PCM FIFO、overrun/discontinuity 计数与 analyzer reset、事件唤醒 DSP worker，以及 latest-only snapshot；
 - 左右 anchor 的全宽 layer-shell surface，默认高度为 320 logical px；

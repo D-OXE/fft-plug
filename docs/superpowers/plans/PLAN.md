@@ -26,7 +26,8 @@ OpenGL Bars / Curve
 
 阶段 7–8 的代码路径已具备基础恢复和关闭处理。2026-10-20 已在真实 niri 26.04 + PipeWire 1.6.9 会话完成验收：真实音频峰值、静音睡眠/唤醒、默认输出切换、PipeWire 重启、输出设备移除后恢复、GL/surface 重建、整数与分数缩放、60/120/160 Hz 刷新率、10 分钟 active + 5 分钟静音长跑均通过；多显示器（当前仅单输出）与壁纸轮换未验证。证据与限制见 `docs/validation/MVP_ACCEPTANCE.md`。建议中提出的 SCTK/EGL/手写 Wayland client 属于后续架构讨论，本阶段按项目约束继续保留 GTK4 + gtk4-layer-shell + GtkGLArea。
 
-本轮动态基线为 `soft = 45/220 ms`、`balanced = 25/150 ms`、`punchy = 15/120 ms`，默认使用 `punchy`。renderer 取消长时二次 attack/release，只保留约 8 ms 的 snapshot 视觉插值；活动和淡出期间继续跟随 GTK frame clock，睡眠且淡出完成后移除 tick callback。DSP worker 无 PCM 时使用事件驱动的 `thread::park()`，PCM 发布和 pipeline 关闭通过无锁 `unpark` 唤醒。transient accent、VBO 预分配和 64/96/128 band A/B 仍等待真实测量，不属于本轮改动。
+<!-- AI Fix - 2026-11-16 10:43 - 将固定插值更新为按 snapshot cadence 自适应 -->
+本轮动态基线为 `soft = 45/220 ms`、`balanced = 25/150 ms`、`punchy = 15/120 ms`，默认使用 `punchy`。renderer 取消长时二次 attack/release，改为按相邻 snapshot 实际到达间隔的 90% 做 8–50 ms 自适应视觉插值；活动和淡出期间继续跟随 GTK frame clock，睡眠且淡出完成后移除 tick callback。DSP worker 无 PCM 时使用事件驱动的 `thread::park()`，PCM 发布和 pipeline 关闭通过无锁 `unpark` 唤醒。transient accent、VBO 预分配和 64/96/128 band A/B 仍等待真实测量，不属于本轮改动。
 
 彩虹流光的 V1/V2 已实现：renderer 自行生成 30 s 周期的连续色相动画，Bars 使用独立的材质透明度、低透明度中性遮罩和顶部高光；不读取壁纸、不接入 niri IPC，也不依赖壁纸管理器。仓库现已提供 `niri/fft-plug.kdl` 作为可直接 include/复制的 niri layer-rule 配置入口；用户仍需手工将它加入自己的 niri 配置，程序不会自动修改 `~/.config/niri`。niri compositor 的 `xray blur` 是可选增强，但实测（2026-10-20）表明**逐柱 blur region 在当前 GTK 4.24 下不可实现**：GTK 自行占用窗口 surface 的 `ext_background_effect_surface_v1`，协议只允许每 surface 一个对象且 GTK 不暴露 region API，原先的客户端实现会让 niri 以协议错误断开连接，因此已移除。当前生效的是透明彩虹柱降级路径；`niri/fft-plug.kdl` 保留但暂不产生可见模糊。
 
