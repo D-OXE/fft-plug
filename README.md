@@ -143,12 +143,13 @@ PipeWire thread              DSP worker               GTK main thread
 
 当前实现采用以下工程基线；真实视觉测试和性能测量完成后再决定是否调整：
 
+<!-- AI Fix - 2026-11-16 11:03 - 记录 bin-aware 对数倍频频段布局 -->
 | 参数 | 当前值 | 说明 |
 | --- | --- | --- |
 | FFT window | 4096 samples | 优先保证低频可视分辨率 |
 | hop size | 512 samples | 48 kHz 下约 93.75 次分析/秒 |
 | window | Hann | 降低频谱泄漏 |
-| bands | 64 | 根据可用 FFT bin 自动约束 |
+| bands | 64 | 对数倍频分布，根据可用 FFT bin 自动约束 |
 | min frequency | ~20 Hz | 实际受 FFT 分辨率限制 |
 | max frequency | `min(20 kHz, Nyquist)` | 根据运行时采样率计算 |
 | amplitude | dB | 设可调整的显示下限 |
@@ -162,7 +163,8 @@ PipeWire thread              DSP worker               GTK main thread
 bin_width = sample_rate / fft_size
 ```
 
-预计算有效 bin 范围，避免多个显示频段反复落到同一 FFT bin，或产生大量空频段。
+<!-- AI Fix - 2026-11-16 11:03 - 说明对数倍频边界与实际 FFT bin 的约束关系 -->
+预计算有效 bin 范围。频段边界按几何级数分布，使相同倍频程获得近似相同数量的显示柱；映射到实际 FFT bin 时强制边界单调且不重复，避免空频段和多个显示频段反复落到同一 bin。这样会展开低中频、压缩 10–20 kHz 的屏幕占比，但不额外提升高频幅值。
 
 如果 4096 点的时域响应在真实使用中显得过软，再实测 2048 点；不要只凭直觉切换窗长。
 

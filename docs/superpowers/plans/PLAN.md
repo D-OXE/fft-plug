@@ -117,12 +117,13 @@ latest immutable snapshot
 
 初始基线：
 
+<!-- AI Fix - 2026-11-16 11:03 - 将频段基线明确为 bin-aware 对数倍频分布 -->
 | 参数 | 初始值 | 说明 |
 | --- | --- | --- |
 | FFT window | 4096 | 优先保证低频分辨率 |
 | hop | 512 | 48 kHz 下约 93.75 Hz 分析更新 |
 | window | Hann | 降低泄漏 |
-| bands | 64 | 受实际 FFT bin 约束 |
+| bands | 64 | 对数倍频分布，受实际 FFT bin 约束 |
 | min frequency | ~20 Hz | 不能低于实际可分辨范围 |
 | max frequency | `min(20 kHz, Nyquist)` | 运行时计算 |
 | amplitude | dB | 设置 floor |
@@ -134,7 +135,8 @@ latest immutable snapshot
 bin_width = sample_rate / fft_size
 ```
 
-预计算 band → bin range，不允许大量 band 重复指向同一单 bin 或产生空 range。
+<!-- AI Fix - 2026-11-16 11:03 - 记录对数倍频 mapping 的行为边界 -->
+预计算 band → bin range：先按几何级数生成对数倍频边界，再按实际 `bin_width` 约束为严格递增且不重复的 bin range。该布局展开低中频并压缩高频屏幕占比，不改变 dB、峰值聚合或 attack/release 语义；不允许大量 band 重复指向同一单 bin 或产生空 range。
 
 2048 点作为备选，只在视觉响应和延迟测量证明 4096 不合适时采用。
 

@@ -433,10 +433,12 @@ fn build_band_ranges(
     let band_count = requested_count.min(active_bins.len()).max(1);
     let mut boundaries = Vec::with_capacity(band_count + 1);
     boundaries.push(0);
+    // AI Fix - 2026-11-16 11:03 - 以几何频率边界生成 bin-aware 对数倍频频段
+    let frequency_ratio = effective_max / effective_min;
     for band_index in 1..band_count {
         let position = band_index as f32 / band_count as f32;
-        let logarithmic_position = position.powf(1.35);
-        let raw = (logarithmic_position * active_bins.len() as f32).round() as usize;
+        let target_frequency = effective_min * frequency_ratio.powf(position);
+        let raw = active_bins.partition_point(|bin| *bin as f32 * bin_width < target_frequency);
         let minimum = boundaries[band_index - 1] + 1;
         let maximum = active_bins.len() - (band_count - band_index);
         boundaries.push(raw.clamp(minimum, maximum));
@@ -652,6 +654,25 @@ mod tests {
                     .all(|pair| pair[0].end_bin < pair[1].start_bin)
             );
         }
+    }
+
+    // AI Fix - 2026-11-16 11:03 - 锁定对数倍频布局的低频展开与高频压缩行为
+    #[test]
+    fn logarithmic_band_mapping_expands_lows_and_compresses_highs() {
+        let analyzer = Analyzer::new(48_000, DspConfig::default()).expect("valid analyzer");
+        let ranges = analyzer.band_ranges();
+        let low_band_count = ranges
+            .iter()
+            .filter(|range| range.center_hz < 2_000.0)
+            .count();
+        let high_band_count = ranges
+            .iter()
+            .filter(|range| range.center_hz >= 10_000.0)
+            .count();
+
+        assert_eq!(ranges.len(), 64);
+        assert!((40..=46).contains(&low_band_count));
+        assert!((5..=8).contains(&high_band_count));
     }
 
     #[test]
