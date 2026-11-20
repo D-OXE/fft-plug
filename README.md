@@ -51,7 +51,7 @@ cargo run -- --mode bars --dynamics punchy
 
 音频流通过 PipeWire 的默认输出 monitor 自动连接。程序优先请求交错 `F32`，但仍从实际协商结果读取采样率、声道数和格式；当前采集回调支持常见交错与平面整数、浮点格式，并将多声道混合为单声道。音频只在内存中经过固定容量、有序的 PCM FIFO；FIFO 过载时丢弃最旧的 READY block 并标记 discontinuity，DSP 会在下一个 block 前重置分析窗口。DSP 只向 UI 发布最新频谱快照，并在无 PCM 时阻塞等待、由新 block 事件唤醒。
 
-`--debug` 每秒输出一次低频诊断快照，包含 PipeWire session/reconnect 计数、callback、PCM 写入/消费/队列/overrun、DSP frame、snapshot age、activity、渲染帧、frame age 以及 surface 逻辑尺寸。当前尚未提供设备选择参数、多显示器选择参数或配置文件；这些属于后续工作。没有 Wayland layer-shell 会话时，程序会给出可重试的启动错误。
+`--debug` 每秒输出一次低频诊断快照，包含 PipeWire session/reconnect 计数、callback、PCM 写入/消费/队列/overrun、DSP frame、snapshot age、activity、渲染帧、frame age 以及 surface 逻辑尺寸；启动时另外输出一次 `gl.vendor`、`gl.renderer`、`gl.version`，用于区分驱动层与 GTK/EGL 层问题。当前尚未提供设备选择参数、多显示器选择参数或配置文件；这些属于后续工作。没有 Wayland layer-shell 会话时，程序会给出可重试的启动错误。
 
 ## MVP
 
@@ -340,6 +340,41 @@ sudo pacman -U fft-plug-0.1.0-1-x86_64.pkg.tar.zst
 `-flto=auto` 追加到 `CFLAGS`/`LDFLAGS`，使 `cc` 编译的 libspa 静态 shim 变成 LTO 字节码，
 最终 rustc 链接（不传递 `LDFLAGS`）无法解析其符号。
 
+## 排障
+
+### GL 上下文创建失败
+
+症状：程序立即以退出码 1 结束，输出类似：
+
+```text
+fft-plug: GTK application error: GtkGLArea could not create an OpenGL context: <GTK 的原始错误>
+hint: the GPU/driver must provide OpenGL 3.3 and a usable EGL config; `GDK_DEBUG=opengl` prints GDK's EGL diagnostics
+```
+
+冒号之后是 GTK/GDK 的原始错误文本，会随语言环境变化；它比程序自己拼的句子更有信息量。定位顺序：
+
+```bash
+GDK_DEBUG=opengl fft-plug    # GDK 打印 EGL 版本、vendor、设备与所选 fbconfig
+fft-plug --debug             # 启动时输出一次 gl.vendor / gl.renderer / gl.version
+GDK_BACKEND=x11 fft-plug     # 仅作对照：layer-shell 在 X11 下不可用，但可验证 GL 本身是否可用
+```
+
+- 若 `--debug` 始终没有打印 `gl.*`，失败发生在 GTK 的 EGL 配置选择阶段，而不是 GLSL 或 GL 资源创建；
+- 若 `GDK_BACKEND=x11` 能创建上下文，说明驱动本身可用，问题在 Wayland + EGL 这条路径。
+
+已记录的环境成因（2026-11，Mesa 26.3.1 + GTK 4.24.1）：
+
+- Mesa 26.3.1 起，radeonsi / llvmpipe 的 EGL config 不再声明 `EGL_OPENGL_ES_BIT`（`EGL_RENDERABLE_TYPE` 只剩 `0x4c` = ES2|GL|ES3）；
+- GTK 4.22 / 4.24 的 `gdk_display_create_egl_config()` 调用 `eglChooseConfig` 时不传 `EGL_RENDERABLE_TYPE`，Mesa 对该属性取默认值 `EGL_OPENGL_ES_BIT`；
+- 两者相遇时匹配到 0 个 config，GDK 报 `No EGL configuration available`，`GtkGLArea` 随即失败；同一程序换用 Mesa 26.2.6 的库可正常创建上下文。
+
+临时手段（任选其一，都不需要修改本程序源码）：
+
+- 回退 `mesa` 到仍声明 ES1 位的版本；
+- 在运行期为缺失 `EGL_RENDERABLE_TYPE` 的 `eglChooseConfig` 查询补上 `EGL_OPENGL_BIT`（例如通过 `LD_PRELOAD` 注入一个只做该修补的 shim）。
+
+以上均为绕开上游问题的临时手段。Mesa 恢复 ES1 位或 GTK 显式传 `EGL_RENDERABLE_TYPE` 后，应删除本节记录的手段。
+
 ## 已实现与待验证
 
 已由代码和无设备测试覆盖：
@@ -351,7 +386,7 @@ sudo pacman -U fft-plug-0.1.0-1-x86_64.pkg.tar.zst
 - Bars / Curve 共用同一份 `SpectrumSnapshot`；
 - 有序有界 PCM FIFO、overrun/discontinuity 计数与 analyzer reset、事件唤醒 DSP worker，以及 latest-only snapshot；
 - 左右 anchor 的全宽 layer-shell surface，默认高度为 320 logical px；
-- `--debug` 低频诊断输出，包含 `audio.sessions`、`audio.reconnects`、callback、PCM、DSP frame、`dsp.snapshot_age_ms`、activity、render frame、`render.frame_age_ms` 和实际 surface 尺寸；
+- `--debug` 低频诊断输出，包含 `audio.sessions`、`audio.reconnects`、callback、PCM、DSP frame、`dsp.snapshot_age_ms`、activity、render frame、`render.frame_age_ms` 和实际 surface 尺寸，以及启动时一次的 `gl.vendor`/`gl.renderer`/`gl.version`；
 - 静音 `ACTIVE -> DECAYING -> SLEEPING -> ACTIVE` 状态；
 - Bars 的程序化连续彩虹流光（30 s 色相周期、HSL finite/clamp）、半透明材质与顶部高光；Curve 保持原有固定配色和频谱语义；
 - 静音、单频、多频、多声道、极低幅值、不同采样率、窗长归一化、边界输入、attack/release profile 和 worker 唤醒测试；

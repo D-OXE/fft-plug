@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::OnceLock;
@@ -23,6 +23,27 @@ const HIGHLIGHT_HEIGHT: f32 = 0.018;
 const MAX_EXPECTED_BANDS: usize = 128;
 const VERTEX_SHADER: &str = "#version 330 core\nlayout(location = 0) in vec2 a_position;\nlayout(location = 1) in vec4 a_color;\nout vec4 v_color;\nvoid main() {\n    gl_Position = vec4(a_position, 0.0, 1.0);\n    v_color = a_color;\n}\n";
 const FRAGMENT_SHADER: &str = "#version 330 core\nin vec4 v_color;\nout vec4 color;\nvoid main() {\n    // Output premultiplied alpha so GtkGLArea content composites correctly over a transparent\n    // window: straight-alpha output from SRC_ALPHA blending would be squared here.\n    color = vec4(v_color.rgb * v_color.a, v_color.a);\n}\n";
+
+/// GL 后端标识，用于区分驱动层与 GTK/EGL 层问题。
+#[derive(Clone, Debug, Default)]
+pub struct GlInfo {
+    pub vendor: String,
+    pub renderer: String,
+    pub version: String,
+}
+
+/// 读取一个 GL 字符串；上下文未 current 或驱动返回 NULL 时得到空串。
+fn gl_string(name: gl::types::GLenum) -> String {
+    // SAFETY: `name` is one of the GL string enums and the caller has made the GLArea context
+    // current; GetString returns a driver-owned NUL-terminated string or NULL.
+    unsafe {
+        let value = gl::GetString(name);
+        if value.is_null() {
+            return String::new();
+        }
+        CStr::from_ptr(value.cast()).to_string_lossy().into_owned()
+    }
+}
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum RenderMode {
@@ -95,8 +116,13 @@ impl GlRenderer {
 
     pub fn realize(&mut self, area: &gtk::GLArea) -> Result<(), String> {
         area.make_current();
-        if area.error().is_some() {
-            return Err("GtkGLArea could not create an OpenGL context".to_string());
+        // AI Fix - 2026-11-20 10:36 - 保留 GtkGLArea 的原始 GError 并给出可操作提示，避免丢失 EGL/驱动层症状
+        if let Some(error) = area.error() {
+            return Err(format!(
+                "GtkGLArea could not create an OpenGL context: {error}\n\
+                 hint: the GPU/driver must provide OpenGL 3.3 and a usable EGL config; \
+                 `GDK_DEBUG=opengl` prints GDK's EGL diagnostics"
+            ));
         }
         gl::load_with(load_gl_symbol);
 
@@ -134,6 +160,16 @@ impl GlRenderer {
             return Err("OpenGL vertex array or buffer could not be created".to_string());
         }
         Ok(())
+    }
+
+    /// 读取当前 GL 上下文的 vendor/renderer/version；仅在真正初始化出上下文后调用。
+    pub fn gl_info(&self, area: &gtk::GLArea) -> GlInfo {
+        area.make_current();
+        GlInfo {
+            vendor: gl_string(gl::VENDOR),
+            renderer: gl_string(gl::RENDERER),
+            version: gl_string(gl::VERSION),
+        }
     }
 
     pub fn unrealize(&mut self, area: &gtk::GLArea) {

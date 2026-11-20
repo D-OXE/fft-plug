@@ -177,6 +177,15 @@ fn build_window(
                     application.quit();
                 }
                 area.queue_render();
+                return;
+            }
+            // AI Fix - 2026-11-20 10:36 - --debug 启动时输出一次 GL 后端信息，便于区分驱动层与 GTK/EGL 层问题
+            if debug {
+                let info = renderer.gl_info(area);
+                eprintln!(
+                    "fft-plug debug: gl.vendor={} gl.renderer={} gl.version={}",
+                    info.vendor, info.renderer, info.version
+                );
             }
         });
     }
